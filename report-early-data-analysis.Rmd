@@ -1,0 +1,439 @@
+---
+title: "Backfill System Performance Assesment"
+author: "Mitchell Brown, Jonathan Kennel, Jonathan Munn, Beth Parker"
+date: "04/02/2022"
+output:
+  html_document:
+    toc: no
+    theme: flatly
+  pdf_document:
+    toc: yes
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(dts)
+library(gridExtra)
+library(arrow)
+library(dplyr)
+library(tibble)
+library(duckdb)
+library(data.table)
+library(plotly)
+library(viridis)
+library(gam)
+library(mgcv)
+library(tidyverse)
+library(plotly)
+library(ggplot2)
+library(grid)
+library(mmand)
+library(earthtide)
+library(waterlevel)
+source("functions/process_heating.R")
+source("functions/process_and_bind.R")
+source("functions/read_snapshots.R")
+```
+# Assessing Performance
+
+Here are possible metrics to go after as outlined by Beth
+
+- sand vs. bentonite placement
+  - how do we decide the port boundry?
+- degree of packing
+- changes in backfill integrity with time
+<!-- Data Processing-->
+
+```{r echo=FALSE, warning=FALSE, include=FALSE}
+
+#specify time intervals to be observed as a list of vectors of start time and end time
+#example: c((0,10),(2,10),(7,100))
+time_intervals <- list(c(180, 360),
+                       c(180, 600), 
+                       c(180, 900), 
+                       c(300, 900), 
+                       c(600, 1200), 
+                       c(600, 1800), 
+                       c(600, 2400), 
+                       c(600, 3000))
+
+inputs <- c("C:/Users/Mitchell/Desktop/Thesis Data/rawSenData/SEN6/2018_08_MLS/channel_1/out180/dts_data/dts.rds",
+            "C:/Users/Mitchell/Desktop/Thesis Data/rawSenData/SEN6/2019_05_MLS/channel_1/out180/dts_data/dts.rds",
+            "C:/Users/Mitchell/Desktop/Thesis Data/rawSenData/SEN6/2019_10_MLS/channel_1/out180/dts_data/dts.rds",
+            "C:/Users/Mitchell/Desktop/Thesis Data/rawSenData/SEN6/2020_02_MLS/channel_2/out180/dts_data/dts.rds",
+            "C:/Users/Mitchell/Desktop/Thesis Data/rawSenData/SEN6/2021_02_MLS/channel_2/out180/dts_data/dts.rds",
+            "C:/Users/Mitchell/Desktop/Thesis Data/rawSenData/SEN6/2021_08_MLS/channel_1/out180/dts_data/dts.rds")
+
+ultima <- readRDS("C:/Users/Mitchell/Desktop/Thesis Data/rawSenData/SEN6/2018_08_MLS/channel_1/out60/dts_data/dts.rds")
+
+alldata <- process_and_bind.multiple_times(inputs, time_intervals, 
+                                           TOC=29.5782,
+                                           resample=TRUE, 
+                                           ultima=ultima,
+                                           input_name_location=8)
+
+# create extra column with device type
+alldata[, machine := as.factor(ifelse(test == "2019_10_MLS" | test== "2020_02_MLS"| test=="2021_02_MLS", "XT", "ULTIMA"))]
+
+# read in port data
+ports <- read.csv("C:/Users/Mitchell/Desktop/Thesis Data/rawSenData/SEN6/ports.csv")
+ports <- ports[1:9,]
+ports$TopDepth <- ports[,1] + 0.47
+ports$BottomDepth <- ports[,2] + 0.47
+intercepts <- append(ports$TopDepth, ports$BottomDepth)
+
+```
+
+## Aggregating Time 
+
+To reduce noise, we aggregate time to a specified interval so that we have a single temperature reading every 'X' seconds. For determining flow and influence of geologic material, Carlos and Munn have suggested an interval of 180 seconds. However, the early time data changes at a much faster rate, especially due to the log time scale. For this reason it is important to understand how different time aggregations influence the early data
+
+Lets look at temperature profiles of different aggregated intervals. I have placed vertical lines based on notable slope changes in the 10 second aggregation (most representative of actual temperature increase in early time) which occur at **110** seconds and **400** seconds respectively
+
+```{r echo=FALSE, warning=FALSE, fig.width=10, fig.height=5}
+
+inputs <- c("C:/Users/Mitchell/Desktop/Thesis Data/rawSenData/SEN6/2018_08_MLS/channel_1/out10/dts_data/dts.rds",
+            "C:/Users/Mitchell/Desktop/Thesis Data/rawSenData/SEN6/2018_08_MLS/channel_1/out30/dts_data/dts.rds",
+            "C:/Users/Mitchell/Desktop/Thesis Data/rawSenData/SEN6/2018_08_MLS/channel_1/out60/dts_data/dts.rds",
+            "C:/Users/Mitchell/Desktop/Thesis Data/rawSenData/SEN6/2018_08_MLS/channel_1/out120/dts_data/dts.rds",
+            "C:/Users/Mitchell/Desktop/Thesis Data/rawSenData/SEN6/2018_08_MLS/channel_1/out180/dts_data/dts.rds")
+
+# generate temp dataset
+time_list <- list()
+i <- 1
+for (input in inputs) {
+  
+  dts <- readRDS(input)
+  
+  df <- read_snapshots(dts, 29.5782, temps=TRUE)
+  
+  df[, aggregate := as.numeric(gsub("out", "", strsplit(inputs[i], "[/]")[[1]][10]))]
+  
+  time_list[[i]] = df
+  
+  i <- i + 1
+}
+
+x <- rbindlist(time_list)
+x$aggregate <- as.factor(x$aggregate)
+
+# generate thermal datasets
+therm <- process_and_bind(inputs, 29.5782, 120, 360,
+                 test_OR_agg=FALSE)
+therm[, aggregate := as.factor(aggregate)]
+
+therm1 <- process_and_bind(inputs, 29.5782, 120, 540,
+                test_OR_agg=FALSE)
+therm1[, aggregate := as.factor(aggregate)]
+
+# create gradient color scale with time
+cc <- scales::seq_gradient_pal("yellow", "red")(seq(0,1,length.out=6))
+
+# inside port
+a <- ggplot(x, aes(log(elapsed_time), `27.7373`, group = aggregate)) +
+  geom_line(aes(color=aggregate), size=1.2) +
+  xlim(c(3, 8.5)) +
+  # ylim(c(12.5,18.5)) +
+  geom_vline(xintercept = c(log(110), log(400))) +
+  scale_color_manual(values=cc) +
+  ggtitle("Inside Port") +
+  theme_dark() +
+  theme(legend.position='none')
+
+
+# outside port
+b <- ggplot(x, aes(log(elapsed_time), `30.7731`, group = aggregate)) +
+  geom_line(aes(color=aggregate), size=1.2) +
+  xlim(c(3, 8.5)) +
+  geom_vline(xintercept = c(log(110), log(400))) +
+  scale_color_manual(values=cc) +
+  theme_dark() +
+  ggtitle("Outside Port") +
+  theme(legend.position=c(.9,.2))
+
+# Therm Con at different time aggregates 
+c <- ggplot(therm, aes(depth, Therm_con, group=aggregate)) +
+  geom_line(aes(color=aggregate)) +
+  ylim(c(0,10)) +
+  scale_x_reverse() + 
+  ggtitle("TC using 110s and 400s for slope determination") +
+  coord_flip() +
+  scale_color_manual(values=cc) +
+  theme_dark() +
+  theme(legend.position=c(.9,.2))
+
+d <- ggplot(therm1, aes(depth, Therm_con, group=aggregate)) +
+  geom_line(aes(color=aggregate)) +
+  ylim(c(0,10)) +
+  scale_x_reverse() + 
+  ggtitle("TC using 1min-10min at different time aggregates") +
+  coord_flip() +
+  scale_color_manual(values=cc) +
+  theme_dark() +
+  theme(legend.position=c(.9,.2))
+
+
+require(gridExtra)
+grid.arrange(a, b, ncol=2)
+```
+
+From the above plots, it appears reading the data in at 60 seconds is mostly representative of the real temperature change with a noise reduction. For further analysis, 60 seconds should be reasonable.  
+
+```{r echo=FALSE, warning=FALSE, fig.width=4, fig.height=9, fig.align = 'center'}
+c
+```
+
+Even though we know what time aggregation would be best to achieve the most representative slopes, we may want to use different aggregated time intervals because of the more obvious distinctions between sand and bentonite due to the steep slopes of larger intervals. 
+
+## Automatically Choosing Port Boundries
+
+To automatically choose port boundaries, we need to decide what signature in the data represents a boundary. There are some clear trends
+
+1. Obvious Dips before and after each boundary
+
+2. Significant increases and decreases in thermal conductivity at each boundary
+
+We can try to identify these features using kmeans clustering and threshold methods, and squaring the difference in thermal conductivity between adjacent points.
+
+### **Using 60 Second Aggregation from 120 - 420 seconds**
+
+```{r echo=FALSE, warning=FALSE, fig.width=13, fig.height=13}
+
+
+
+three <- therm[therm$aggregate==60]
+
+# make column for difference
+reduced <- three[,1:2]
+reduced$difference <- append((apply(reduced[,2], 2, diff)),0)
+reduced$difference_abs <- append(abs(apply(reduced[,2], 2, diff)),0)
+reduced$difference_sq <- (append((apply(reduced[,2], 2, diff)),0))^2
+reduced$difference_abs_sq <- (append(abs(apply(reduced[,2], 2, diff)),0))^2
+# calculate instantaneous gradients
+vec <- reduced$difference
+sorted <- sort(vec)
+reduced[,split := as.factor(threshold(reduced$difference, 0.05))] 
+
+#threshold for 180
+thresh2 <- threshold(three$Therm_con, method="kmeans")
+three$threshold <- as.factor(thresh2)
+#kmeans
+km <- kmeans(three$Therm_con, 3)
+three$kmeans <- as.factor(km$cluster)
+
+
+
+# plotting points using the threshold method
+a <- ggplot(three, aes(depth, Therm_con, group=threshold)) +
+  geom_point(aes(color=kmeans)) + 
+  scale_x_reverse() + 
+  coord_flip() +
+  ylim(c(0, 3)) + 
+  geom_vline(xintercept=intercepts) +
+  ggtitle("a) Threshold") + 
+  ylab("Thermal Conductivity (W/mK)") +
+  xlab("Depth Below Ground Surface (m)") +
+  theme(legend.position="none")
+
+b <- ggplot(three, aes(depth, Therm_con, group=threshold)) +
+  geom_point(aes(color=threshold)) + 
+  scale_x_reverse() + 
+  coord_flip() +
+  ylim(c(0, 3)) + 
+  geom_vline(xintercept=intercepts) +
+  ggtitle("a) Threshold") + 
+  ylab("Thermal Conductivity (W/mK)") +
+  xlab("Depth Below Ground Surface (m)") +
+  theme(legend.position="none")
+
+c <- ggplot(three, aes(depth, Therm_con, group=threshold)) +
+  geom_point(aes(color=kmeans)) + 
+  scale_x_reverse() + 
+  coord_flip() +
+  ylim(c(0, 3)) + 
+  geom_vline(xintercept=intercepts) +
+  ggtitle("b) KMeans") + 
+  ylab("Thermal Conductivity (W/mK)") +
+  xlab("Depth Below Ground Surface (m)") +
+  theme(legend.position="none",
+        axis.title.y=element_blank())
+
+# plotting points using the threshold method
+d <- ggplot(reduced, aes(depth, difference_abs_sq)) +
+  geom_line(color="red") +
+  # geom_point(aes(color=split)) + 
+  scale_x_reverse() + 
+  coord_flip() +
+  ylim(c(0, 0.035)) + 
+  ggtitle("c) Difference in TC between points squared") +
+  geom_vline(xintercept=intercepts) +
+  ylab("Thermal Conductivity (W/mK)") +
+  theme(axis.title.y = element_blank())
+
+e <- ggplot(reduced, aes(depth, difference_sq)) +
+  geom_line() +
+  # geom_point(aes(color=split)) + 
+  scale_x_reverse() + 
+  coord_flip() +
+  ylim(c(-.2, 0.2)) + 
+  ggtitle("e) Difference in TC between points") +
+  geom_vline(xintercept=intercepts) +
+  ylab("Thermal Conductivity (W/mK)") +
+  theme(axis.title.y = element_blank())
+
+grid.arrange(b, c, d, ncol=3)
+
+```
+
+### **Using 180 Second Aggregation from 180 - 540 seconds (3 data points)**
+
+Interestingly enough, using the 180 second aggregation (although less representative of the actual temperature change) provides better results for automatically picking sand and bentonite locations as seen below. Especially in the plot on the right.
+
+```{r echo=FALSE, warning=FALSE, fig.width=13, fig.height=13}
+
+three <- therm1[therm1$aggregate==180]
+
+# make column for difference
+reduced <- three[,1:2]
+reduced$difference <- append((apply(reduced[,2], 2, diff)),0)
+reduced$difference_abs <- append(abs(apply(reduced[,2], 2, diff)),0)
+reduced$difference_sq <- (append((apply(reduced[,2], 2, diff)),0))^2
+reduced$difference_abs_sq <- (append(abs(apply(reduced[,2], 2, diff)),0))^2
+# calculate instantaneous gradients
+vec <- reduced$difference
+sorted <- sort(vec)
+reduced[,split := as.factor(threshold(reduced$difference, 0.05))] 
+
+#threshold for 180
+thresh2 <- threshold(three$Therm_con, method="kmeans")
+three$threshold <- as.factor(thresh2)
+#kmeans
+km <- kmeans(three$Therm_con, 3)
+three$kmeans <- as.factor(km$cluster)
+
+# plotting points using the threshold method
+a <- ggplot(three, aes(depth, Therm_con, group=threshold)) +
+  geom_point(aes(color=kmeans)) + 
+  scale_x_reverse() + 
+  coord_flip() +
+  ylim(c(0, 1.5)) + 
+  geom_vline(xintercept=intercepts) +
+  ggtitle("a) Threshold") + 
+  ylab("Thermal Conductivity (W/mK)") +
+  xlab("Depth Below Ground Surface (m)") +
+  theme(legend.position="none")
+
+b <- ggplot(three, aes(depth, Therm_con, group=threshold)) +
+  geom_point(aes(color=threshold)) + 
+  scale_x_reverse() + 
+  coord_flip() +
+  ylim(c(0, 1.5)) + 
+  geom_vline(xintercept=intercepts) +
+  ggtitle("a) Threshold") + 
+  ylab("Thermal Conductivity (W/mK)") +
+  xlab("Depth Below Ground Surface (m)") +
+  theme(legend.position="none")
+
+c <- ggplot(three, aes(depth, Therm_con, group=threshold)) +
+  geom_point(aes(color=kmeans)) + 
+  scale_x_reverse() + 
+  coord_flip() +
+  ylim(c(0, 1.5)) + 
+  geom_vline(xintercept=intercepts) +
+  ggtitle("b) KMeans") + 
+  ylab("Thermal Conductivity (W/mK)") +
+  xlab("Depth Below Ground Surface (m)") +
+  theme(legend.position="none",
+        axis.title.y=element_blank())
+
+# plotting points using the threshold method
+d <- ggplot(reduced, aes(depth, difference_abs_sq)) +
+  geom_line(color="red") +
+  # geom_point(aes(color=split)) + 
+  scale_x_reverse() + 
+  coord_flip() +
+  ylim(c(0, 0.035)) + 
+  ggtitle("c) Difference in TC between points squared") +
+  geom_vline(xintercept=intercepts) +
+  ylab("Thermal Conductivity (W/mK)") +
+  theme(axis.title.y = element_blank())
+
+e <- ggplot(reduced, aes(depth, difference_sq)) +
+  geom_line() +
+  # geom_point(aes(color=split)) + 
+  scale_x_reverse() + 
+  coord_flip() +
+  ylim(c(-.2, 0.2)) + 
+  ggtitle("e) Difference in TC between points") +
+  geom_vline(xintercept=intercepts) +
+  ylab("Thermal Conductivity (W/mK)") +
+  theme(axis.title.y = element_blank())
+
+grid.arrange(b, c, d, ncol=3)
+
+```
+
+
+## Changes In Early Time Data Throughout all tests
+
+Assessing data across all test could tell us how the properties of the sand and bentonite change over a large time scale. For instance, thermal conductivity in early data does not seem to be a function of the DTS machine used like in the late heating data, whether XT or Ultima. 
+
+```{r echo=FALSE, warning=FALSE, fig.width=10, fig.height=13}
+
+df <- alldata[alldata$time=="180, 600"]
+
+cc <- scales::seq_gradient_pal("yellow", "red")(seq(0,1,length.out=6))
+
+c <- ggplot(df, aes(depth, Therm_con, group = test)) +
+  geom_line(aes(color = test), size=1.2) +
+  scale_x_reverse() + 
+  coord_flip() +
+  ylim(c(0, 1.5)) + 
+  geom_vline(xintercept=intercepts) +
+  ggtitle("a) Thermal Conductivity of all tests at 180, 540") + 
+  ylab("Thermal Conductivity (W/mK)") +
+  xlab("Depth Below Ground Surface (m)") +
+  scale_colour_manual(values=cc) +
+  theme_dark()
+
+d <- ggplot(df, aes(depth, Therm_con, group=test)) +
+  geom_line(aes(color = machine, group=test)) +
+  scale_x_reverse() + 
+  coord_flip() +
+  ylim(c(0, 1.5)) + 
+  geom_vline(xintercept=intercepts) +
+  ggtitle("b) Difference Between XT and Ultima") + 
+  ylab("Thermal Conductivity (W/mK)") +
+  scale_color_manual(values=c("red", "black")) +
+  theme(axis.title.y = element_blank())
+
+grid.arrange(c, d, ncol=2)
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

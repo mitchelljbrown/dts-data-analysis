@@ -1,0 +1,1333 @@
+---
+title: "Port Temperature Profiles and Seal Placement"
+author: "Mitchell Brown, Jonathan Kennel, Jonathan Munn, Beth Parker"
+date: "04/02/2022"
+output:
+  html_document:
+    toc: no
+    theme: flatly
+  pdf_document:
+    toc: yes
+---
+<!-- This chunk reads in the libraries -->
+
+### **Main Objective**
+Attribute changes in apparent thermal conductivity in monitoring intervals to hydrological features or errors due to DTS data collection or processing
+
+### **Presented in this report**
+
+Plots of each monitoring interval isolated in SEN-06 multilevel system with 6 A-DTS snapshots accompanied by 
+
+1. Temperature plots of each test at each depth discrete measurement within monitoring interval determined by the A-DTS sampling resolution
+  - is the slope poorly fit resulting in unreliable thermal conductivity?
+  
+2. Instantaneous apparent thermal conductivities at each depth 
+  - how consistent is the instantaneous thermal conductivity with time compared to the overall thermal conductivity
+  
+3. ATV amplitude images
+  - attribute changes in thermal conductivity between tests with specific fractures/features
+  
+### **Work In Progess**
+
+- there is a problem with the instantaneous thermal conductivities for 2018_08_MLS generated with the "fit_convolve" function which I have not solved yet
+
+```{r setup, include=FALSE}
+library(ggplot2)
+library(data.table)
+library(dplyr)
+library(dts)
+library(tibble)
+library(duckdb)
+library(tidyverse)
+library(plotly)
+library(knitr)
+library(gridExtra)
+library(cowplot)
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+<!-- This chunk reads in all the data -->
+
+```{r echo=FALSE, warning=FALSE}
+
+# 1. read in port location data
+# ports <- data.table(read.csv("data/port_data.csv"))
+ports <- fread("data/port_data.csv")
+
+# 2. read in thermal conductivity data
+# therm <- (data.table(read.csv("data/thermal_conductivity.csv")))[,X := NULL]
+therm <- fread("data/thermal_conductivity.csv")[,V1 := NULL]
+
+# 3. read in temperature data
+temp <- fread("data/all_temperature_data.csv")[,c("V1", "variable"):=NULL]
+
+# 4. read in instantaneous thermal conductivites
+data <- readRDS("data/instantaneous_03_16.rds")
+instant <- data[[1]]
+overall <- data[[2]]
+overall$depth <- as.double(levels(overall$depth))[overall$depth]
+instant$depth <- instant$depth 
+overall$depth <- overall$depth 
+
+# 6. read in ATV amplitude
+amp <- readRDS("data/amplitude.rds")
+
+# now set distance intervals for atv data
+# to do this, extract distance from processed dts data
+x <- therm[test=="2018_08_MLS"]
+intervals <- x$depth
+```
+
+### All Thermal Conductivity Data 
+
+```{r echo=FALSE, warning=FALSE, fig.width=10, fig.height=10} 
+intercepts <- append(ports$TopDepth, ports$BottomDepth)
+
+full_therm <- ggplot(therm, aes(depth, Therm_con, group = test, color = test)) + 
+          geom_line(size=1.05) +
+          ylim(c(0,10)) +
+          scale_x_reverse() +
+          coord_flip() +
+          geom_vline(xintercept=intercepts) +
+          ggtitle("Port Thermal Conductivities") +
+          ylab("Thermal Conductivity (W/mK)") +
+          xlab("Depth Below Ground Surface (m)") +
+          theme(legend.position = 'none')
+
+#full_therm <- ggplotly(full_therm)
+
+full_rsq <- ggplot(therm, aes(depth, rsq, group = test, color = test)) + 
+          geom_line(size=1.05) +
+          ylim(c(0,1)) +
+          scale_x_reverse() +
+          coord_flip() +
+          geom_vline(xintercept=intercepts) +
+          ggtitle("R Squared") +
+          ylab("Thermal Conductivity (W/mK)") +
+          theme(axis.title.y = element_blank(),
+                axis.title.x = element_blank())
+          # theme(legend.position = 'none')
+
+#full_rsq <- ggplotly(full_stats)
+
+full_stderror <- ggplot(therm, aes(depth, ste, group = test, color = test)) +
+          geom_line() +
+          ylim(c(0,0.05)) +
+          scale_x_reverse() +
+          coord_flip() +
+          geom_vline(xintercept=intercepts) +
+          ggtitle("Standard Error") +
+          ylab("Thermal Conductivity (W/mK)") +
+          theme(axis.title.y = element_blank(),
+                axis.title.x = element_blank()
+                )
+
+#full_stderror <- ggplotly(full_stderror)
+
+plot_grid(full_therm, full_rsq, ncol=2, rel_widths = c(2/3, 1/3))
+# a <- subplot(full_therm, full_stats, shareX = TRUE, shareY=FALSE)
+# a %>% style(t, showlegend=FALSE, traces=6:14)
+```
+
+## Port Analysis {.tabset .tabset-fade .tabset-pills}
+
+XT - 2019_10, 2020_02, 2021_02
+
+Ultima - 2018_08, 2019_05, 2021_08
+
+note: black lines are port boundaries
+
+
+
+
+### Port S {.tabset .tabset-fade .tabset-pills}
+
+```{r echo=FALSE, warning=FALSE, fig.width=10, fig.height=6} 
+
+i <- 1
+
+top <- ports$TopDepth[i] - 0.5
+bottom <- ports$BottomDepth[i] + 0.5
+
+# 1. Port Thermal Conductivities================================================
+
+therm_port <- therm[therm$depth >= top & 
+                    therm$depth <= bottom,]
+
+if (max(therm_port$Therm_con) > 50) {
+  upper = 50
+} else if (max(therm_port$Therm_con) < 10) {
+  upper = 10
+} else {
+  upper = max(therm_port$Therm_con)
+}
+
+therm_plot <- ggplot(therm_port, aes(depth, Therm_con, group = test, color = test)) + 
+          geom_line() +
+          ylim(c(0, upper)) +
+          scale_x_reverse() +
+          coord_flip() +
+          geom_vline(xintercept=ports$TopDepth[i]) +
+          geom_vline(xintercept=ports$BottomDepth[i]) +
+          ggtitle("Thermal Conductivity") +
+          ylab("Thermal Conductivity (W/mK)") +
+          xlab("Depth Below Ground Surface (m)") 
+          #theme(legend.position = 'none')
+
+therm_plot <- ggplotly(therm_plot)
+therm_plot <- therm_plot %>% add_markers(showlegend=F)
+
+stats_plot <- ggplot(therm_port, aes(depth, rsq, group = test, color = test)) + 
+          geom_line() +
+          ylim(c(0,1)) +
+          scale_x_reverse() +
+          coord_flip() +
+          geom_vline(xintercept=ports$TopDepth[i]) +
+          geom_vline(xintercept=ports$BottomDepth[i]) +
+          # ggtitle("R Squared") +
+          ylab("R Squared Value") +
+          xlab("Depth Below Ground Surface (m)")
+
+stats_plot <- ggplotly(stats_plot)
+
+# 2. Port Temperatures==========================================================
+
+temp_port <- temp %>% filter(temp$filter >= top, 
+                             temp$filter <= bottom)
+
+temp_plot <- ggplot(temp_port, aes(x =V1, y=value, color = type, group = type)) +
+          geom_line(aes(color=type)) +
+          xlab("Log Time (s)") +
+          ylab("Temperature") +
+          facet_wrap (filter~., scales="fixed", ncol=5) +
+          theme(legend.title = element_blank()) 
+
+temp_plot <- ggplotly(temp_plot)
+
+# 3. Instantaneous Thermal Conductivities=======================================
+
+port_inst <- instant[with(instant, depth > (top) & depth < (bottom))]
+port_over <- overall[with(overall, depth > (top) & depth < (bottom))]
+
+base <- ggplot(port_inst, aes(elapsed_time_log, thermal_conductivity, group=type, color=type))
+instant_port <- base + geom_line(aes(color=type)) + 
+          ylim(c(0,upper)) +
+          xlim(c(log(3600),log(36000))) +
+          xlab("Log Time (s)") +
+          ylab("Thermal Conductivity (W/mK)") +
+          facet_wrap (depth~., scales="free_y", ncol=5) +
+          geom_hline(data=port_over, aes(yintercept=thermal_conductivity, color = snapshots))
+
+instant_port <- ggplotly(instant_port)
+
+#4. ATV Images==================================================================
+
+# subset to ports
+port_interval <- intervals[intervals > top & intervals < bottom]
+
+# process data for plotting
+n_intervals <- length(port_interval) - 1
+interval_subs <- data.table(id = 1:n_intervals,
+                            top = port_interval[-n_intervals],
+                            bot = port_interval[-1],
+                            mid = (port_interval[-n_intervals] + port_interval[-1])/2)
+
+imgs <- interval_subs[amp, on = .(top <= depth, bot >= depth), nomatch = 0]
+
+
+atv_images <- ggplot(imgs, aes(x = angle, y = top)) +
+          geom_tile(aes(fill = value, color = value)) + 
+          facet_wrap(mid~., scales = 'free_y') + 
+          scale_fill_viridis_c() + 
+          scale_color_viridis_c() + 
+          scale_y_reverse() +
+          ylab("Depth (m)") +
+          xlab("Angle") +
+          theme_bw() + 
+          theme(panel.grid.major = element_blank(),
+                panel.grid.minor = element_blank(),
+                panel.border = element_blank(),
+                panel.background = element_blank())
+
+b <- subplot(therm_plot, stats_plot, shareX = TRUE, shareY=TRUE)
+b %>% style(t, showlegend=FALSE, traces=6:14)
+```
+
+#### Termperature {.tabset .tabset-fade .tabset-pills}
+```{r echo=FALSE, warning=FALSE, fig.width=10, fig.height=8}
+temp_plot
+```
+
+#### Instantanesous Thermal Conductivity
+```{r echo=FALSE, warning=FALSE, fig.width=10, fig.height=8}
+instant_port
+```
+
+#### ATV Amplitude
+```{r echo=FALSE, warning=FALSE, fig.width=10, fig.height=6}
+atv_images
+```
+
+
+
+### Port 6 {.tabset .tabset-fade .tabset-pills}
+
+```{r echo=FALSE, warning=FALSE, fig.width=10, fig.height=6} 
+
+i <- 2
+
+top <- ports$TopDepth[i] - 0.5
+bottom <- ports$BottomDepth[i] + 0.5
+
+# 1. Port Thermal Conductivities================================================
+
+therm_port <- therm[therm$depth >= top & 
+                    therm$depth <= bottom,]
+
+if (max(therm_port$Therm_con) > 50) {
+  upper = 50
+} else if (max(therm_port$Therm_con) < 10) {
+  upper = 10
+} else {
+  upper = max(therm_port$Therm_con)
+}
+
+therm_plot <- ggplot(therm_port, aes(depth, Therm_con, group = test, color = test)) + 
+          geom_line() +
+          ylim(c(0, upper)) +
+          scale_x_reverse() +
+          coord_flip() +
+          geom_vline(xintercept=ports$TopDepth[i]) +
+          geom_vline(xintercept=ports$BottomDepth[i]) +
+          ggtitle("Thermal Conductivity") +
+          ylab("Thermal Conductivity (W/mK)") +
+          xlab("Depth Below Ground Surface (m)") 
+          #theme(legend.position = 'none')
+
+therm_plot <- ggplotly(therm_plot)
+therm_plot <- therm_plot %>% add_markers(showlegend=F)
+
+stats_plot <- ggplot(therm_port, aes(depth, rsq, group = test, color = test)) + 
+          geom_line() +
+          ylim(c(0,1)) +
+          scale_x_reverse() +
+          coord_flip() +
+          geom_vline(xintercept=ports$TopDepth[i]) +
+          geom_vline(xintercept=ports$BottomDepth[i]) +
+          # ggtitle("R Squared") +
+          ylab("R Squared Value") +
+          xlab("Depth Below Ground Surface (m)")
+
+stats_plot <- ggplotly(stats_plot)
+
+# 2. Port Temperatures==========================================================
+
+temp_port <- temp %>% filter(temp$filter >= top, 
+                             temp$filter <= bottom)
+
+temp_plot <- ggplot(temp_port, aes(x =V1, y=value, color = type, group = type)) +
+          geom_line(aes(color=type)) +
+          xlab("Log Time (s)") +
+          ylab("Temperature") +
+          facet_wrap (filter~., scales="fixed", ncol=5) +
+          theme(legend.title = element_blank()) 
+
+temp_plot <- ggplotly(temp_plot)
+
+# 3. Instantaneous Thermal Conductivities=======================================
+
+port_inst <- instant[with(instant, depth > (top) & depth < (bottom))]
+port_over <- overall[with(overall, depth > (top) & depth < (bottom))]
+
+base <- ggplot(port_inst, aes(elapsed_time_log, thermal_conductivity, group=type, color=type))
+instant_port <- base + geom_line(aes(color=type)) + 
+          ylim(c(0,10)) +
+          xlim(c(log(3600),log(36000))) +
+          xlab("Log Time (s)") +
+          ylab("Thermal Conductivity (W/mK)") +
+          facet_wrap (depth~., scales="fixed", ncol=5) +
+          geom_hline(data=port_over, aes(yintercept=thermal_conductivity, color = snapshots))
+
+instant_port <- ggplotly(instant_port)
+
+#4. ATV Images==================================================================
+
+# subset to ports
+port_interval <- intervals[intervals > top & intervals < bottom]
+
+# process data for plotting
+n_intervals <- length(port_interval) - 1
+interval_subs <- data.table(id = 1:n_intervals,
+                            top = port_interval[-n_intervals],
+                            bot = port_interval[-1],
+                            mid = (port_interval[-n_intervals] + port_interval[-1])/2)
+
+imgs <- interval_subs[amp, on = .(top <= depth, bot >= depth), nomatch = 0]
+
+
+atv_images <- ggplot(imgs, aes(x = angle, y = top)) +
+          geom_tile(aes(fill = value, color = value)) + 
+          facet_wrap(mid~., scales = 'free_y') + 
+          scale_fill_viridis_c() + 
+          scale_color_viridis_c() + 
+          scale_y_reverse() +
+          ylab("Depth (m)") +
+          xlab("Angle") +
+          theme_bw() + 
+          theme(panel.grid.major = element_blank(),
+                panel.grid.minor = element_blank(),
+                panel.border = element_blank(),
+                panel.background = element_blank())
+
+b <- subplot(therm_plot, stats_plot, shareX = TRUE, shareY=TRUE)
+b %>% style(t, showlegend=FALSE, traces=6:14)
+```
+
+#### Termperature {.tabset .tabset-fade .tabset-pills}
+```{r echo=FALSE, warning=FALSE, fig.width=10, fig.height=8}
+temp_plot
+```
+
+#### Instantanesous Thermal Conductivity
+```{r echo=FALSE, warning=FALSE, fig.width=10, fig.height=8}
+instant_port
+```
+
+#### ATV Imaging
+```{r echo=FALSE, warning=FALSE, fig.width=10, fig.height=6}
+atv_images
+```
+
+
+### Port 5 {.tabset .tabset-fade .tabset-pills}
+
+```{r echo=FALSE, warning=FALSE, fig.width=10, fig.height=6} 
+
+i <- 3
+
+top <- ports$TopDepth[i] - 0.5
+bottom <- ports$BottomDepth[i] + 0.5
+
+# 1. Port Thermal Conductivities================================================
+
+therm_port <- therm[therm$depth >= top & 
+                    therm$depth <= bottom,]
+
+if (max(therm_port$Therm_con) > 50) {
+  upper = 50
+} else if (max(therm_port$Therm_con) < 10) {
+  upper = 10
+} else {
+  upper = max(therm_port$Therm_con)
+}
+
+therm_plot <- ggplot(therm_port, aes(depth, Therm_con, group = test, color = test)) + 
+          geom_line() +
+          ylim(c(0, upper)) +
+          scale_x_reverse() +
+          coord_flip() +
+          geom_vline(xintercept=ports$TopDepth[i]) +
+          geom_vline(xintercept=ports$BottomDepth[i]) +
+          ggtitle("Thermal Conductivity") +
+          ylab("Thermal Conductivity (W/mK)") +
+          xlab("Depth Below Ground Surface (m)") 
+          #theme(legend.position = 'none')
+
+therm_plot <- ggplotly(therm_plot)
+therm_plot <- therm_plot %>% add_markers(showlegend=F)
+
+stats_plot <- ggplot(therm_port, aes(depth, rsq, group = test, color = test)) + 
+          geom_line() +
+          ylim(c(0,1)) +
+          scale_x_reverse() +
+          coord_flip() +
+          geom_vline(xintercept=ports$TopDepth[i]) +
+          geom_vline(xintercept=ports$BottomDepth[i]) +
+          # ggtitle("R Squared") +
+          ylab("R Squared Value") +
+          xlab("Depth Below Ground Surface (m)")
+
+stats_plot <- ggplotly(stats_plot)
+
+# 2. Port Temperatures==========================================================
+
+temp_port <- temp %>% filter(temp$filter >= top, 
+                             temp$filter <= bottom)
+
+temp_plot <- ggplot(temp_port, aes(x =V1, y=value, color = type, group = type)) +
+          geom_line(aes(color=type)) +
+          xlab("Log Time (s)") +
+          ylab("Temperature") +
+          facet_wrap (filter~., scales="fixed", ncol=5) +
+          theme(legend.title = element_blank()) 
+
+temp_plot <- ggplotly(temp_plot)
+
+# 3. Instantaneous Thermal Conductivities=======================================
+
+port_inst <- instant[with(instant, depth > (top) & depth < (bottom))]
+port_over <- overall[with(overall, depth > (top) & depth < (bottom))]
+
+base <- ggplot(port_inst, aes(elapsed_time_log, thermal_conductivity, group=type, color=type))
+instant_port <- base + geom_line(aes(color=type)) + 
+          ylim(c(0,10)) +
+          xlim(c(log(3600),log(36000))) +
+          xlab("Log Time (s)") +
+          ylab("Thermal Conductivity (W/mK)") +
+          facet_wrap (depth~., scales="fixed", ncol=5) +
+          geom_hline(data=port_over, aes(yintercept=thermal_conductivity, color = snapshots))
+
+instant_port <- ggplotly(instant_port)
+
+#4. ATV Images==================================================================
+
+# subset to ports
+port_interval <- intervals[intervals > top & intervals < bottom]
+
+# process data for plotting
+n_intervals <- length(port_interval) - 1
+interval_subs <- data.table(id = 1:n_intervals,
+                            top = port_interval[-n_intervals],
+                            bot = port_interval[-1],
+                            mid = (port_interval[-n_intervals] + port_interval[-1])/2)
+
+imgs <- interval_subs[amp, on = .(top <= depth, bot >= depth), nomatch = 0]
+
+
+atv_images <- ggplot(imgs, aes(x = angle, y = top)) +
+          geom_tile(aes(fill = value, color = value)) + 
+          facet_wrap(mid~., scales = 'free_y') + 
+          scale_fill_viridis_c() + 
+          scale_color_viridis_c() + 
+          scale_y_reverse() +
+          ylab("Depth (m)") +
+          xlab("Angle") +
+          theme_bw() + 
+          theme(panel.grid.major = element_blank(),
+                panel.grid.minor = element_blank(),
+                panel.border = element_blank(),
+                panel.background = element_blank())
+
+b <- subplot(therm_plot, stats_plot, shareX = TRUE, shareY=TRUE)
+b %>% style(t, showlegend=FALSE, traces=6:14)
+```
+
+#### Termperature {.tabset .tabset-fade .tabset-pills}
+```{r echo=FALSE, warning=FALSE, fig.width=10, fig.height=8}
+temp_plot
+```
+
+#### Instantanesous Thermal Conductivity
+```{r echo=FALSE, warning=FALSE, fig.width=10, fig.height=8}
+instant_port
+```
+
+#### ATV Imaging
+```{r echo=FALSE, warning=FALSE, fig.width=10, fig.height=6}
+atv_images
+```
+
+### Port I {.tabset .tabset-fade .tabset-pills}
+
+```{r echo=FALSE, warning=FALSE, fig.width=10, fig.height=6} 
+
+i <- 4
+
+top <- ports$TopDepth[i] - 0.5
+bottom <- ports$BottomDepth[i] + 0.5
+
+# 1. Port Thermal Conductivities================================================
+
+therm_port <- therm[therm$depth >= top & 
+                    therm$depth <= bottom,]
+
+if (max(therm_port$Therm_con) > 50) {
+  upper = 50
+} else if (max(therm_port$Therm_con) < 10) {
+  upper = 10
+} else {
+  upper = max(therm_port$Therm_con)
+}
+
+therm_plot <- ggplot(therm_port, aes(depth, Therm_con, group = test, color = test)) + 
+          geom_line() +
+          ylim(c(0, upper)) +
+          scale_x_reverse() +
+          coord_flip() +
+          geom_vline(xintercept=ports$TopDepth[i]) +
+          geom_vline(xintercept=ports$BottomDepth[i]) +
+          ggtitle("Thermal Conductivity") +
+          ylab("Thermal Conductivity (W/mK)") +
+          xlab("Depth Below Ground Surface (m)") 
+          #theme(legend.position = 'none')
+
+therm_plot <- ggplotly(therm_plot)
+therm_plot <- therm_plot %>% add_markers(showlegend=F)
+
+stats_plot <- ggplot(therm_port, aes(depth, rsq, group = test, color = test)) + 
+          geom_line() +
+          ylim(c(0,1)) +
+          scale_x_reverse() +
+          coord_flip() +
+          geom_vline(xintercept=ports$TopDepth[i]) +
+          geom_vline(xintercept=ports$BottomDepth[i]) +
+          # ggtitle("R Squared") +
+          ylab("R Squared Value") +
+          xlab("Depth Below Ground Surface (m)")
+
+stats_plot <- ggplotly(stats_plot)
+
+# 2. Port Temperatures==========================================================
+
+temp_port <- temp %>% filter(temp$filter >= top, 
+                             temp$filter <= bottom)
+
+temp_plot <- ggplot(temp_port, aes(x =V1, y=value, color = type, group = type)) +
+          geom_line(aes(color=type)) +
+          xlab("Log Time (s)") +
+          ylab("Temperature") +
+          facet_wrap (filter~., scales="fixed", ncol=5) +
+          theme(legend.title = element_blank()) 
+
+temp_plot <- ggplotly(temp_plot)
+
+# 3. Instantaneous Thermal Conductivities=======================================
+
+port_inst <- instant[with(instant, depth > (top) & depth < (bottom))]
+port_over <- overall[with(overall, depth > (top) & depth < (bottom))]
+
+base <- ggplot(port_inst, aes(elapsed_time_log, thermal_conductivity, group=type, color=type))
+instant_port <- base + geom_line(aes(color=type)) + 
+          ylim(c(0,10)) +
+          xlim(c(log(3600),log(36000))) +
+          xlab("Log Time (s)") +
+          ylab("Thermal Conductivity (W/mK)") +
+          facet_wrap (depth~., scales="fixed", ncol=5) +
+          geom_hline(data=port_over, aes(yintercept=thermal_conductivity, color = snapshots))
+
+instant_port <- ggplotly(instant_port)
+
+#4. ATV Images==================================================================
+
+# subset to ports
+port_interval <- intervals[intervals > top & intervals < bottom]
+
+# process data for plotting
+n_intervals <- length(port_interval) - 1
+interval_subs <- data.table(id = 1:n_intervals,
+                            top = port_interval[-n_intervals],
+                            bot = port_interval[-1],
+                            mid = (port_interval[-n_intervals] + port_interval[-1])/2)
+
+imgs <- interval_subs[amp, on = .(top <= depth, bot >= depth), nomatch = 0]
+
+
+atv_images <- ggplot(imgs, aes(x = angle, y = top)) +
+          geom_tile(aes(fill = value, color = value)) + 
+          facet_wrap(mid~., scales = 'free_y') + 
+          scale_fill_viridis_c() + 
+          scale_color_viridis_c() + 
+          scale_y_reverse() +
+          ylab("Depth (m)") +
+          xlab("Angle") +
+          theme_bw() + 
+          theme(panel.grid.major = element_blank(),
+                panel.grid.minor = element_blank(),
+                panel.border = element_blank(),
+                panel.background = element_blank())
+
+b <- subplot(therm_plot, stats_plot, shareX = TRUE, shareY=TRUE)
+b %>% style(t, showlegend=FALSE, traces=6:14)
+```
+
+#### Termperature {.tabset .tabset-fade .tabset-pills}
+```{r echo=FALSE, warning=FALSE, fig.width=10, fig.height=8}
+temp_plot
+```
+
+#### Instantanesous Thermal Conductivity
+```{r echo=FALSE, warning=FALSE, fig.width=10, fig.height=8}
+instant_port
+```
+
+#### ATV Imaging
+```{r echo=FALSE, warning=FALSE, fig.width=10, fig.height=6}
+atv_images
+```
+
+### Port 4 {.tabset .tabset-fade .tabset-pills}
+
+```{r echo=FALSE, warning=FALSE, fig.width=10, fig.height=6} 
+
+i <- 5
+
+top <- ports$TopDepth[i] - 0.5
+bottom <- ports$BottomDepth[i] + 0.5
+
+# 1. Port Thermal Conductivities================================================
+
+therm_port <- therm[therm$depth >= top & 
+                    therm$depth <= bottom,]
+
+if (max(therm_port$Therm_con) > 50) {
+  upper = 50
+} else if (max(therm_port$Therm_con) < 10) {
+  upper = 10
+} else {
+  upper = max(therm_port$Therm_con)
+}
+
+therm_plot <- ggplot(therm_port, aes(depth, Therm_con, group = test, color = test)) + 
+          geom_line() +
+          ylim(c(0, upper)) +
+          scale_x_reverse() +
+          coord_flip() +
+          geom_vline(xintercept=ports$TopDepth[i]) +
+          geom_vline(xintercept=ports$BottomDepth[i]) +
+          ggtitle("Thermal Conductivity") +
+          ylab("Thermal Conductivity (W/mK)") +
+          xlab("Depth Below Ground Surface (m)") 
+          #theme(legend.position = 'none')
+
+therm_plot <- ggplotly(therm_plot)
+therm_plot <- therm_plot %>% add_markers(showlegend=F)
+
+stats_plot <- ggplot(therm_port, aes(depth, rsq, group = test, color = test)) + 
+          geom_line() +
+          ylim(c(0,1)) +
+          scale_x_reverse() +
+          coord_flip() +
+          geom_vline(xintercept=ports$TopDepth[i]) +
+          geom_vline(xintercept=ports$BottomDepth[i]) +
+          # ggtitle("R Squared") +
+          ylab("R Squared Value") +
+          xlab("Depth Below Ground Surface (m)")
+
+stats_plot <- ggplotly(stats_plot)
+
+# 2. Port Temperatures==========================================================
+
+temp_port <- temp %>% filter(temp$filter >= top, 
+                             temp$filter <= bottom)
+
+temp_plot <- ggplot(temp_port, aes(x =V1, y=value, color = type, group = type)) +
+          geom_line(aes(color=type)) +
+          xlab("Log Time (s)") +
+          ylab("Temperature") +
+          facet_wrap (filter~., scales="fixed", ncol=5) +
+          theme(legend.title = element_blank()) 
+
+temp_plot <- ggplotly(temp_plot)
+
+# 3. Instantaneous Thermal Conductivities=======================================
+
+port_inst <- instant[with(instant, depth > (top) & depth < (bottom))]
+port_over <- overall[with(overall, depth > (top) & depth < (bottom))]
+
+base <- ggplot(port_inst, aes(elapsed_time_log, thermal_conductivity, group=type, color=type))
+instant_port <- base + geom_line(aes(color=type)) + 
+          ylim(c(0,10)) +
+          xlim(c(log(3600),log(36000))) +
+          xlab("Log Time (s)") +
+          ylab("Thermal Conductivity (W/mK)") +
+          facet_wrap (depth~., scales="fixed", ncol=5) +
+          geom_hline(data=port_over, aes(yintercept=thermal_conductivity, color = snapshots))
+
+instant_port <- ggplotly(instant_port)
+
+#4. ATV Images==================================================================
+
+# subset to ports
+port_interval <- intervals[intervals > top & intervals < bottom]
+
+# process data for plotting
+n_intervals <- length(port_interval) - 1
+interval_subs <- data.table(id = 1:n_intervals,
+                            top = port_interval[-n_intervals],
+                            bot = port_interval[-1],
+                            mid = (port_interval[-n_intervals] + port_interval[-1])/2)
+
+imgs <- interval_subs[amp, on = .(top <= depth, bot >= depth), nomatch = 0]
+
+
+atv_images <- ggplot(imgs, aes(x = angle, y = top)) +
+          geom_tile(aes(fill = value, color = value)) + 
+          facet_wrap(mid~., scales = 'free_y') + 
+          scale_fill_viridis_c() + 
+          scale_color_viridis_c() + 
+          scale_y_reverse() +
+          ylab("Depth (m)") +
+          xlab("Angle") +
+          theme_bw() + 
+          theme(panel.grid.major = element_blank(),
+                panel.grid.minor = element_blank(),
+                panel.border = element_blank(),
+                panel.background = element_blank())
+
+b <- subplot(therm_plot, stats_plot, shareX = TRUE, shareY=TRUE)
+b %>% style(t, showlegend=FALSE, traces=6:14)
+```
+
+#### Termperature {.tabset .tabset-fade .tabset-pills}
+```{r echo=FALSE, warning=FALSE, fig.width=10, fig.height=8}
+temp_plot
+```
+
+#### Instantanesous Thermal Conductivity
+```{r echo=FALSE, warning=FALSE, fig.width=10, fig.height=8}
+instant_port
+```
+
+#### ATV Imaging
+```{r echo=FALSE, warning=FALSE, fig.width=10, fig.height=6}
+atv_images
+```
+
+### Port D {.tabset .tabset-fade .tabset-pills}
+
+```{r echo=FALSE, warning=FALSE, fig.width=10, fig.height=6} 
+
+i <- 6
+
+top <- ports$TopDepth[i] - 0.5
+bottom <- ports$BottomDepth[i] + 0.5
+
+# 1. Port Thermal Conductivities================================================
+
+therm_port <- therm[therm$depth >= top & 
+                    therm$depth <= bottom,]
+
+if (max(therm_port$Therm_con) > 50) {
+  upper = 50
+} else if (max(therm_port$Therm_con) < 10) {
+  upper = 10
+} else {
+  upper = max(therm_port$Therm_con)
+}
+
+therm_plot <- ggplot(therm_port, aes(depth, Therm_con, group = test, color = test)) + 
+          geom_line() +
+          ylim(c(0, upper)) +
+          scale_x_reverse() +
+          coord_flip() +
+          geom_vline(xintercept=ports$TopDepth[i]) +
+          geom_vline(xintercept=ports$BottomDepth[i]) +
+          ggtitle("Thermal Conductivity") +
+          ylab("Thermal Conductivity (W/mK)") +
+          xlab("Depth Below Ground Surface (m)") 
+          #theme(legend.position = 'none')
+
+therm_plot <- ggplotly(therm_plot)
+therm_plot <- therm_plot %>% add_markers(showlegend=F)
+
+stats_plot <- ggplot(therm_port, aes(depth, rsq, group = test, color = test)) + 
+          geom_line() +
+          ylim(c(0,1)) +
+          scale_x_reverse() +
+          coord_flip() +
+          geom_vline(xintercept=ports$TopDepth[i]) +
+          geom_vline(xintercept=ports$BottomDepth[i]) +
+          # ggtitle("R Squared") +
+          ylab("R Squared Value") +
+          xlab("Depth Below Ground Surface (m)")
+
+stats_plot <- ggplotly(stats_plot)
+
+# 2. Port Temperatures==========================================================
+
+temp_port <- temp %>% filter(temp$filter >= top, 
+                             temp$filter <= bottom)
+
+temp_plot <- ggplot(temp_port, aes(x =V1, y=value, color = type, group = type)) +
+          geom_line(aes(color=type)) +
+          xlab("Log Time (s)") +
+          ylab("Temperature") +
+          facet_wrap (filter~., scales="fixed", ncol=5) +
+          theme(legend.title = element_blank()) 
+
+temp_plot <- ggplotly(temp_plot)
+
+# 3. Instantaneous Thermal Conductivities=======================================
+
+port_inst <- instant[with(instant, depth > (top) & depth < (bottom))]
+port_over <- overall[with(overall, depth > (top) & depth < (bottom))]
+
+base <- ggplot(port_inst, aes(elapsed_time_log, thermal_conductivity, group=type, color=type))
+instant_port <- base + geom_line(aes(color=type)) + 
+          ylim(c(0,10)) +
+          xlim(c(log(3600),log(36000))) +
+          xlab("Log Time (s)") +
+          ylab("Thermal Conductivity (W/mK)") +
+          facet_wrap (depth~., scales="fixed", ncol=5) +
+          geom_hline(data=port_over, aes(yintercept=thermal_conductivity, color = snapshots))
+
+instant_port <- ggplotly(instant_port)
+
+#4. ATV Images==================================================================
+
+# subset to ports
+port_interval <- intervals[intervals > top & intervals < bottom]
+
+# process data for plotting
+n_intervals <- length(port_interval) - 1
+interval_subs <- data.table(id = 1:n_intervals,
+                            top = port_interval[-n_intervals],
+                            bot = port_interval[-1],
+                            mid = (port_interval[-n_intervals] + port_interval[-1])/2)
+
+imgs <- interval_subs[amp, on = .(top <= depth, bot >= depth), nomatch = 0]
+
+
+atv_images <- ggplot(imgs, aes(x = angle, y = top)) +
+          geom_tile(aes(fill = value, color = value)) + 
+          facet_wrap(mid~., scales = 'free_y') + 
+          scale_fill_viridis_c() + 
+          scale_color_viridis_c() + 
+          scale_y_reverse() +
+          ylab("Depth (m)") +
+          xlab("Angle") +
+          theme_bw() + 
+          theme(panel.grid.major = element_blank(),
+                panel.grid.minor = element_blank(),
+                panel.border = element_blank(),
+                panel.background = element_blank())
+
+b <- subplot(therm_plot, stats_plot, shareX = TRUE, shareY=TRUE)
+b %>% style(t, showlegend=FALSE, traces=6:14)
+```
+
+#### Termperature {.tabset .tabset-fade .tabset-pills}
+```{r echo=FALSE, warning=FALSE, fig.width=10, fig.height=8}
+temp_plot
+```
+
+#### Instantanesous Thermal Conductivity
+```{r echo=FALSE, warning=FALSE, fig.width=10, fig.height=8}
+instant_port
+```
+
+#### ATV Imaging
+```{r echo=FALSE, warning=FALSE, fig.width=10, fig.height=6}
+atv_images
+```
+
+### Port 3 {.tabset .tabset-fade .tabset-pills}
+
+```{r echo=FALSE, warning=FALSE, fig.width=10, fig.height=6} 
+
+i <- 7
+
+top <- ports$TopDepth[i] - 0.5
+bottom <- ports$BottomDepth[i] + 0.5
+
+# 1. Port Thermal Conductivities================================================
+
+therm_port <- therm[therm$depth >= top & 
+                    therm$depth <= bottom,]
+
+if (max(therm_port$Therm_con) > 50) {
+  upper = 50
+} else if (max(therm_port$Therm_con) < 10) {
+  upper = 10
+} else {
+  upper = max(therm_port$Therm_con)
+}
+
+therm_plot <- ggplot(therm_port, aes(depth, Therm_con, group = test, color = test)) + 
+          geom_line() +
+          ylim(c(0, upper)) +
+          scale_x_reverse() +
+          coord_flip() +
+          geom_vline(xintercept=ports$TopDepth[i]) +
+          geom_vline(xintercept=ports$BottomDepth[i]) +
+          ggtitle("Thermal Conductivity") +
+          ylab("Thermal Conductivity (W/mK)") +
+          xlab("Depth Below Ground Surface (m)") 
+          #theme(legend.position = 'none')
+
+therm_plot <- ggplotly(therm_plot)
+therm_plot <- therm_plot %>% add_markers(showlegend=F)
+
+stats_plot <- ggplot(therm_port, aes(depth, rsq, group = test, color = test)) + 
+          geom_line() +
+          ylim(c(0,1)) +
+          scale_x_reverse() +
+          coord_flip() +
+          geom_vline(xintercept=ports$TopDepth[i]) +
+          geom_vline(xintercept=ports$BottomDepth[i]) +
+          # ggtitle("R Squared") +
+          ylab("R Squared Value") +
+          xlab("Depth Below Ground Surface (m)")
+
+stats_plot <- ggplotly(stats_plot)
+
+# 2. Port Temperatures==========================================================
+
+temp_port <- temp %>% filter(temp$filter >= top, 
+                             temp$filter <= bottom)
+
+temp_plot <- ggplot(temp_port, aes(x =V1, y=value, color = type, group = type)) +
+          geom_line(aes(color=type)) +
+          xlab("Log Time (s)") +
+          ylab("Temperature") +
+          facet_wrap (filter~., scales="fixed", ncol=5) +
+          theme(legend.title = element_blank()) 
+
+temp_plot <- ggplotly(temp_plot)
+
+# 3. Instantaneous Thermal Conductivities=======================================
+
+port_inst <- instant[with(instant, depth > (top) & depth < (bottom))]
+port_over <- overall[with(overall, depth > (top) & depth < (bottom))]
+
+base <- ggplot(port_inst, aes(elapsed_time_log, thermal_conductivity, group=type, color=type))
+instant_port <- base + geom_line(aes(color=type)) + 
+          ylim(c(0,10)) +
+          xlim(c(log(3600),log(36000))) +
+          xlab("Log Time (s)") +
+          ylab("Thermal Conductivity (W/mK)") +
+          facet_wrap (depth~., scales="fixed", ncol=5) +
+          geom_hline(data=port_over, aes(yintercept=thermal_conductivity, color = snapshots))
+
+instant_port <- ggplotly(instant_port)
+
+#4. ATV Images==================================================================
+
+# subset to ports
+port_interval <- intervals[intervals > top & intervals < bottom]
+
+# process data for plotting
+n_intervals <- length(port_interval) - 1
+interval_subs <- data.table(id = 1:n_intervals,
+                            top = port_interval[-n_intervals],
+                            bot = port_interval[-1],
+                            mid = (port_interval[-n_intervals] + port_interval[-1])/2)
+
+imgs <- interval_subs[amp, on = .(top <= depth, bot >= depth), nomatch = 0]
+
+
+atv_images <- ggplot(imgs, aes(x = angle, y = top)) +
+          geom_tile(aes(fill = value, color = value)) + 
+          facet_wrap(mid~., scales = 'free_y') + 
+          scale_fill_viridis_c() + 
+          scale_color_viridis_c() + 
+          scale_y_reverse() +
+          ylab("Depth (m)") +
+          xlab("Angle") +
+          theme_bw() + 
+          theme(panel.grid.major = element_blank(),
+                panel.grid.minor = element_blank(),
+                panel.border = element_blank(),
+                panel.background = element_blank())
+
+b <- subplot(therm_plot, stats_plot, shareX = TRUE, shareY=TRUE)
+b %>% style(t, showlegend=FALSE, traces=6:14)
+```
+
+#### Termperature {.tabset .tabset-fade .tabset-pills}
+```{r echo=FALSE, warning=FALSE, fig.width=10, fig.height=8}
+temp_plot
+```
+
+#### Instantanesous Thermal Conductivity
+```{r echo=FALSE, warning=FALSE, fig.width=10, fig.height=8}
+instant_port
+```
+
+#### ATV Imaging
+```{r echo=FALSE, warning=FALSE, fig.width=10, fig.height=6}
+atv_images
+```
+
+### Port 2 {.tabset .tabset-fade .tabset-pills}
+
+```{r echo=FALSE, warning=FALSE, fig.width=10, fig.height=6} 
+
+i <- 8
+
+top <- ports$TopDepth[i] - 0.5
+bottom <- ports$BottomDepth[i] + 0.5
+
+# 1. Port Thermal Conductivities================================================
+
+therm_port <- therm[therm$depth >= top & 
+                    therm$depth <= bottom,]
+
+if (max(therm_port$Therm_con) > 50) {
+  upper = 50
+} else if (max(therm_port$Therm_con) < 10) {
+  upper = 10
+} else {
+  upper = max(therm_port$Therm_con)
+}
+
+therm_plot <- ggplot(therm_port, aes(depth, Therm_con, group = test, color = test)) + 
+          geom_line() +
+          ylim(c(0, upper)) +
+          scale_x_reverse() +
+          coord_flip() +
+          geom_vline(xintercept=ports$TopDepth[i]) +
+          geom_vline(xintercept=ports$BottomDepth[i]) +
+          ggtitle("Thermal Conductivity") +
+          ylab("Thermal Conductivity (W/mK)") +
+          xlab("Depth Below Ground Surface (m)") 
+          #theme(legend.position = 'none')
+
+therm_plot <- ggplotly(therm_plot)
+therm_plot <- therm_plot %>% add_markers(showlegend=F)
+
+stats_plot <- ggplot(therm_port, aes(depth, rsq, group = test, color = test)) + 
+          geom_line() +
+          ylim(c(0,1)) +
+          scale_x_reverse() +
+          coord_flip() +
+          geom_vline(xintercept=ports$TopDepth[i]) +
+          geom_vline(xintercept=ports$BottomDepth[i]) +
+          # ggtitle("R Squared") +
+          ylab("R Squared Value") +
+          xlab("Depth Below Ground Surface (m)")
+
+stats_plot <- ggplotly(stats_plot)
+
+# 2. Port Temperatures==========================================================
+
+temp_port <- temp %>% filter(temp$filter >= top, 
+                             temp$filter <= bottom)
+
+temp_plot <- ggplot(temp_port, aes(x =V1, y=value, color = type, group = type)) +
+          geom_line(aes(color=type)) +
+          xlab("Log Time (s)") +
+          ylab("Temperature") +
+          facet_wrap (filter~., scales="fixed", ncol=5) +
+          theme(legend.title = element_blank()) 
+
+temp_plot <- ggplotly(temp_plot)
+
+# 3. Instantaneous Thermal Conductivities=======================================
+
+port_inst <- instant[with(instant, depth > (top) & depth < (bottom))]
+port_over <- overall[with(overall, depth > (top) & depth < (bottom))]
+
+base <- ggplot(port_inst, aes(elapsed_time_log, thermal_conductivity, group=type, color=type))
+instant_port <- base + geom_line(aes(color=type)) + 
+          ylim(c(0,10)) +
+          xlim(c(log(3600),log(36000))) +
+          xlab("Log Time (s)") +
+          ylab("Thermal Conductivity (W/mK)") +
+          facet_wrap (depth~., scales="fixed", ncol=5) +
+          geom_hline(data=port_over, aes(yintercept=thermal_conductivity, color = snapshots))
+
+instant_port <- ggplotly(instant_port)
+
+#4. ATV Images==================================================================
+
+# subset to ports
+port_interval <- intervals[intervals > top & intervals < bottom]
+
+# process data for plotting
+n_intervals <- length(port_interval) - 1
+interval_subs <- data.table(id = 1:n_intervals,
+                            top = port_interval[-n_intervals],
+                            bot = port_interval[-1],
+                            mid = (port_interval[-n_intervals] + port_interval[-1])/2)
+
+imgs <- interval_subs[amp, on = .(top <= depth, bot >= depth), nomatch = 0]
+
+
+atv_images <- ggplot(imgs, aes(x = angle, y = top)) +
+          geom_tile(aes(fill = value, color = value)) + 
+          facet_wrap(mid~., scales = 'free_y') + 
+          scale_fill_viridis_c() + 
+          scale_color_viridis_c() + 
+          scale_y_reverse() +
+          ylab("Depth (m)") +
+          xlab("Angle") +
+          theme_bw() + 
+          theme(panel.grid.major = element_blank(),
+                panel.grid.minor = element_blank(),
+                panel.border = element_blank(),
+                panel.background = element_blank())
+
+b <- subplot(therm_plot, stats_plot, shareX = TRUE, shareY=TRUE)
+b %>% style(t, showlegend=FALSE, traces=6:14)
+```
+
+#### Termperature {.tabset .tabset-fade .tabset-pills}
+```{r echo=FALSE, warning=FALSE, fig.width=10, fig.height=8}
+temp_plot
+```
+
+#### Instantanesous Thermal Conductivity
+```{r echo=FALSE, warning=FALSE, fig.width=10, fig.height=8}
+instant_port
+```
+
+#### ATV Imaging
+```{r echo=FALSE, warning=FALSE, fig.width=10, fig.height=6}
+atv_images
+```
+
+### Port 1 {.tabset .tabset-fade .tabset-pills}
+
+```{r echo=FALSE, warning=FALSE, fig.width=10, fig.height=6} 
+
+i <- 9
+
+top <- ports$TopDepth[i] - 0.5
+bottom <- ports$BottomDepth[i] + 0.5
+
+# 1. Port Thermal Conductivities================================================
+
+therm_port <- therm[therm$depth >= top & 
+                    therm$depth <= bottom,]
+
+if (max(therm_port$Therm_con) > 50) {
+  upper = 50
+} else if (max(therm_port$Therm_con) < 10) {
+  upper = 10
+} else {
+  upper = max(therm_port$Therm_con)
+}
+
+therm_plot <- ggplot(therm_port, aes(depth, Therm_con, group = test, color = test)) + 
+          geom_line() +
+          ylim(c(0, upper)) +
+          scale_x_reverse() +
+          coord_flip() +
+          geom_vline(xintercept=ports$TopDepth[i]) +
+          geom_vline(xintercept=ports$BottomDepth[i]) +
+          ggtitle("Thermal Conductivity") +
+          ylab("Thermal Conductivity (W/mK)") +
+          xlab("Depth Below Ground Surface (m)") 
+          #theme(legend.position = 'none')
+
+therm_plot <- ggplotly(therm_plot)
+therm_plot <- therm_plot %>% add_markers(showlegend=F)
+
+stats_plot <- ggplot(therm_port, aes(depth, rsq, group = test, color = test)) + 
+          geom_line() +
+          ylim(c(0,1)) +
+          scale_x_reverse() +
+          coord_flip() +
+          geom_vline(xintercept=ports$TopDepth[i]) +
+          geom_vline(xintercept=ports$BottomDepth[i]) +
+          # ggtitle("R Squared") +
+          ylab("R Squared Value") +
+          xlab("Depth Below Ground Surface (m)")
+
+stats_plot <- ggplotly(stats_plot)
+
+# 2. Port Temperatures==========================================================
+
+temp_port <- temp %>% filter(temp$filter >= top, 
+                             temp$filter <= bottom)
+
+temp_plot <- ggplot(temp_port, aes(x =V1, y=value, color = type, group = type)) +
+          geom_line(aes(color=type)) +
+          xlab("Log Time (s)") +
+          ylab("Temperature") +
+          facet_wrap (filter~., scales="fixed", ncol=5) +
+          theme(legend.title = element_blank()) 
+
+temp_plot <- ggplotly(temp_plot)
+
+# 3. Instantaneous Thermal Conductivities=======================================
+
+port_inst <- instant[with(instant, depth > (top) & depth < (bottom))]
+port_over <- overall[with(overall, depth > (top) & depth < (bottom))]
+
+base <- ggplot(port_inst, aes(elapsed_time_log, thermal_conductivity, group=type, color=type))
+instant_port <- base + geom_line(aes(color=type)) + 
+          ylim(c(0,10)) +
+          xlim(c(log(3600),log(36000))) +
+          xlab("Log Time (s)") +
+          ylab("Thermal Conductivity (W/mK)") +
+          facet_wrap (depth~., scales="fixed", ncol=5) +
+          geom_hline(data=port_over, aes(yintercept=thermal_conductivity, color = snapshots))
+
+instant_port <- ggplotly(instant_port)
+
+#4. ATV Images==================================================================
+
+# subset to ports
+port_interval <- intervals[intervals > top & intervals < bottom]
+
+# process data for plotting
+n_intervals <- length(port_interval) - 1
+interval_subs <- data.table(id = 1:n_intervals,
+                            top = port_interval[-n_intervals],
+                            bot = port_interval[-1],
+                            mid = (port_interval[-n_intervals] + port_interval[-1])/2)
+
+imgs <- interval_subs[amp, on = .(top <= depth, bot >= depth), nomatch = 0]
+
+
+atv_images <- ggplot(imgs, aes(x = angle, y = top)) +
+          geom_tile(aes(fill = value, color = value)) + 
+          facet_wrap(mid~., scales = 'free_y') + 
+          scale_fill_viridis_c() + 
+          scale_color_viridis_c() + 
+          scale_y_reverse() +
+          ylab("Depth (m)") +
+          xlab("Angle") +
+          theme_bw() + 
+          theme(panel.grid.major = element_blank(),
+                panel.grid.minor = element_blank(),
+                panel.border = element_blank(),
+                panel.background = element_blank())
+
+b <- subplot(therm_plot, stats_plot, shareX = TRUE, shareY=TRUE)
+b %>% style(t, showlegend=FALSE, traces=6:14)
+```
+
+#### Termperature {.tabset .tabset-fade .tabset-pills}
+```{r echo=FALSE, warning=FALSE, fig.width=10, fig.height=8}
+temp_plot
+```
+
+#### Instantanesous Thermal Conductivity
+```{r echo=FALSE, warning=FALSE, fig.width=10, fig.height=8}
+instant_port
+```
+
+#### ATV Imaging
+```{r echo=FALSE, warning=FALSE, fig.width=10, fig.height=6}
+atv_images
+```
+
+
+## Examples
+
+### **Example 1: Extreme thermal conductivity values explained**
+
+*Click on the "Port S" tab*
+
+**Port Thermal Conductivity Plot**
+
+- extremely high thermal conductivities are seen 
+- the corresponding R squared values indicate that the slope for log time vs temperature is very poorly fit 
+
+**Temperature Tab**
+
+- non-linear log-time vs temperature plots corresponding to extreme thermal conductivity values
+
+**Instantaneous Thermal Conductivity Tab**
+
+- large changes in instantaneous thermal conductivities observed from 1hr to 10hr indicating the temperature data lack linearity
+
+conclusion: Extreme thermal conductivities are not representative of true values due to poor data collection
+
+### **Example 2: Changes in thermal conductivity between tests explained**
+
+*Click on the "Port 6" tab*
+
+**Port Thermal Conductivity Plot**
+
+- Large increase at around 14.5 mbtoc in "2018_08_MLS" with a slight decrease in R squared values indicating that the increase is likely accurately represented and is due to a change in flow
+
+**ATV Amplitude**
+
+- the peak increase in thermal conductivity occurs from 14.0764 mbtoc and 14.2029 mbtoc
+- this interval in the ATV amplitude images shows a large fracture
+
+conclusion: Change in thermal conductivity can be attributed to a change in flow through the fracture displayed in the ATV image

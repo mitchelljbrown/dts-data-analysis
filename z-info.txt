@@ -1,0 +1,23 @@
+These are the list of relevant files used to process and manipulate A-DTS data for Mitchell Brown's Thesis
+
+file: read_files.R
+purpose: reads in the raw data from .xml form and outputs formatted data.table
+
+file: get_thermal_conductivity.R
+purpose: Functions For Getting Thermal Conductivity From Formatted Data
+
+1. read_snapshots
+- reads in .rds file of preocessed raw data and outputs a data.table of thermal conductivity
+
+2. read_snapshots_csv
+- same as first function but outputs csv instead of a data.table
+
+3. process_and_bind
+- takes many inputs and outputs thermal conductivity of all in a single structured data.table
+
+file: process_heating.R
+purpose: Function for performing many rudimentry processing steps
+
+- performs many steps common for processing A-DTS data
+- provides the option to start heating earlier than the actual start of heating
+	- this allows the visualization of termperature plots that show the onset of heating
