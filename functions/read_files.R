@@ -34,18 +34,20 @@ system.time(dts_out <- read_dts_xml_3(input,
 #-------------------------------------------------------------------------------
 
 
-inputs <- c('C:/Users/Mitchell/Desktop/Thesis Data/rawSenData/SEN6/2019_10_MLS/channel_1',
+inputs <- c('C:/Users/Mitchell/Desktop/Thesis Data/rawSenData/SEN6/2018_08_MLS/channel_1',
+            'C:/Users/Mitchell/Desktop/Thesis Data/rawSenData/SEN6/2019_05_MLS/channel_1',
+            'C:/Users/Mitchell/Desktop/Thesis Data/rawSenData/SEN6/2019_10_MLS/channel_1',
             'C:/Users/Mitchell/Desktop/Thesis Data/rawSenData/SEN6/2020_02_MLS/channel_2',
             'C:/Users/Mitchell/Desktop/Thesis Data/rawSenData/SEN6/2021_02_MLS/channel_2',
             'C:/Users/Mitchell/Desktop/Thesis Data/rawSenData/SEN6/2021_08_MLS/channel_1')
   
 for (input in inputs) {
   system.time(dts_out <- read_dts_xml_3(input, 
-                                        out_dir = file.path(input, RDS_output='out'),
+                                        out_dir = file.path(input, RDS_output='allfiles'),
                                         n_cores = 1,
                                         return_stokes = FALSE,
                                         in_memory = TRUE,
-                                        time_aggregate_interval = 10, output_rds = TRUE))
+                                        output_rds = TRUE))
 }
 
 

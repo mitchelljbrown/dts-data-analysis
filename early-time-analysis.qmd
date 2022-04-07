@@ -1,0 +1,436 @@
+---
+title: "Early Data Analysis"
+author: "Mitchell Brown, Jonathan Kennel, Jonathan Munn, Beth Parker"
+format: html
+editor: visual
+---
+
+```{r}
+#| echo: false
+#| warning: false
+#| include: false
+#| freeze: true
+
+knitr::opts_chunk$set(echo = TRUE)
+library(dts)
+library(gridExtra)
+library(dplyr)
+library(tibble)
+library(duckdb)
+library(data.table)
+library(viridis)
+library(tidyverse)
+library(plotly)
+library(ggplot2)
+library(mmand)
+library(earthtide)
+library(waterlevel)
+library(hydrorecipes)
+library(splines)
+library(gifski)
+library(cowplot)
+library(gganimate)
+source("functions/process_heating.R")
+source("functions/process_and_bind.R")
+source("functions/read_snapshots.R")
+source("functions/get_instantaneous_v2.R")
+```
+
+<!-- Reading all required data -->
+
+```{r}
+#| echo: false
+#| warning: false
+#| include: false
+
+#' *Reading Data*
+
+# Backfill Data
+ports <- data.table(read.csv("data/port_data.csv"))[,X := NULL]
+
+#' *Get instantaneous for All*
+
+TOC <- 29.5782 + 0.47
+
+# setwd("C:/Users/Mitchell/Desktop/Thesis Data/rawSenData/SEN6")
+# inputs <- c("2018_08_MLS/channel_1/allfiles/dts_data/dts.rds",
+#             # "2019_05_MLS/channel_1/allfiles/dts_data/dts.rds",
+#             "2019_10_MLS/channel_1/allfiles/dts_data/dts.rds",
+#             "2020_02_MLS/channel_2/allfiles/dts_data/dts.rds",
+#             "2021_02_MLS/channel_2/allfiles/dts_data/dts.rds",
+#             "2021_08_MLS/channel_1/allfiles/dts_data/dts.rds")
+# 
+# process <- list()
+# i <- 1
+# for (input in inputs) {
+#   x <- readRDS(input)
+#   
+#   if (input == "2021_02_MLS/channel_2/allfiles/dts_data/dts.rds") {
+#     x$device$configuration_name <- "2021_02"
+#   }
+# 
+#   df <- read_snapshots(x, TOC=TOC, end=1800, out='dtsobject')
+# 
+#   process[[i]] <- df
+# 
+#   print(process[[i]])
+#   i <- i + 1
+# }
+# 
+# d <- get_instantaneous_2.list(process, n_knots=12)
+# saveRDS(d, "data/all_inst.rds")
+inst_all <- readRDS("data/all_inst.rds") 
+
+#' *add column of material*
+inst_all[,material:= ifelse(
+  distance %inrange% list(ports$TopDepth, ports$BottomDepth)==TRUE,
+  "Sand", "Bentonite")]
+
+#' *change thermal conductivity for 2018_08 becuase of power output*
+inst_all[type=="2018-08-16 SEN6 A-DTS", thermal_conductivity := ((1.0/instantaneous_slope) * 10 / (4.0*pi))]
+
+```
+
+When assessing early time heating data, it is important to use the lowest temporal resolution possible. For this report, every .xml file was read for each test to achieve this. Because of the inherent noise associated with reading the data in at this resolution, Kennel's `fit_convolve()` function was used to smooth the temperature responses show in @fig-time-vs-temp.
+
+<!-- Plotting Temperature Responses -->
+
+```{r}
+#| label: fig-time-vs-temp
+#| fig-cap: "Temperature changes with log time at each depth in the borehole smoothed with fit_convolve() with an n_knots value of 12"
+#| echo: false
+#| warning: false
+
+# isolate to only use one test
+data <- inst_all[type=="2018-08-16 SEN6 A-DTS"]
+
+# Plot temperature Traces
+plot(temperature~elapsed_time_log, data, pch=20, cex=0.5,
+     main="Smoothing Log Time vs. Temperature Curves",
+     xlab = "Log Elapsed Time",
+     ylab = "Temperature")
+points(cumulative_delta_temperature~elapsed_time_log, data, type='l', col='red', lwd=1)
+```
+
+<!-- generating data for multiple time intervals -->
+
+```{r}
+#| echo: false
+#| warning: false
+#| include: false
+
+# Generate data for multiple time periods
+
+# define time intervals in list
+intervals <- list(c(30, 60),
+                  c(60, 80),
+                   c(60,100),
+                  c(60, 120),
+                   c(60, 200), 
+                   c(60, 300), 
+                   c(60, 400), 
+                   c(60, 500))
+
+# create data.table to store all data from each time
+alldata <- data.table()
+
+
+
+# dts output power
+power <- 10
+
+# loop to generate data for each time interval and bind
+for (times in intervals) {
+  start <- times[1]
+  end <- times[2]
+  
+  thermal <- data[elapsed_time >= start & elapsed_time <= end
+          ,list(slope=coef(lm(cumulative_delta_temperature~elapsed_time_log))[2], 
+          rsquared=summary(lm(cumulative_delta_temperature~elapsed_time_log))$r.squared), by=distance]
+  
+  
+  thermal[,thermal_conductivity := ((1.0/slope) * power / (4.0*pi))]
+  thermal[,material:= ifelse(
+          distance %inrange% list(ports$TopDepth, ports$BottomDepth)==TRUE,
+          "Sand", "Bentonite")]
+  
+  thermal[,interval := toString(times)]
+  
+  alldata <- rbind(alldata, thermal)
+}
+```
+
+## Evolution of Thermal Conductivity Profile
+
+### Using Smoothed Data
+
+@fig-time-intervals shows the evolution of thermal conductivity as the time interval to calculate slope on log-time temperature plots increases where @fig-instantaneous-slopes is generated using instantaneous slopes from the `fit_convolve()` function.
+
+<!-- Plotting Thermal Conductivity Taking Slopes of Smoothed Line -->
+```{r}
+#| label: fig-time-intervals
+#| fig-cap: "Thermal conductivity profiles generated by using different time intervals to calculate slope on the smoothed data in @fig-time-vs-temp"
+#| fig-height: 10
+#| warning: false
+#| animation-hook: "gifski"
+#| echo: false
+
+for (i in unique(alldata$interval)) {
+  
+  subset <- alldata[interval == i]
+  subset[, difference := append(apply(subset[,4], 2, diff)^3, 0)]
+  
+  title <- strsplit(i, ",")
+  
+  # Thermal conductivity plot
+  time_interval <- ggplot(subset, aes(distance, thermal_conductivity, color=material)) +
+    geom_line(aes(group=1)) +
+    scale_x_reverse() +
+    coord_flip(ylim=c(0,2.5)) +
+    theme(legend.position = "none") +
+    ggtitle(paste("time interval: ", title[[1]][1],"-", title[[1]][2], "seconds"))
+    
+  
+  # R squared plot
+  r_squared <- ggplot(subset, aes(distance, rsquared, color=material)) +
+    geom_line(aes(group=1)) +
+    scale_x_reverse() +
+    coord_flip(ylim=c(0,1)) +
+    theme(axis.title.y = element_blank(),
+          legend.position="none") +
+    ggtitle("R Squared")
+  
+  # differences plot
+  difference <- ggplot(subset, aes(distance, difference, color=material)) +
+    geom_line(aes(group=1)) +
+    scale_x_reverse() +
+    coord_flip(ylim=c(-0.25,0.25)) +
+    theme(axis.title.x = element_text("Thermal Conductivity"),
+          axis.title.y = element_text("Depth btoc")) +
+    ggtitle("Cubed Differnces Between adjacent Points") +
+    theme(axis.title.y=element_blank())
+  
+  print(plot_grid(time_interval, r_squared, difference, ncol=3, rel_widths = c(2, 1, 2)))
+}
+
+```
+
+### Using Instantaneous Slopes
+
+<!-- Plotting using Instantaneous Slopes -->
+```{r}
+#| label: fig-instantaneous-slopes
+#| fig-cap: "Thermal conductivity profiles generated using the instantaneous slope at a specific time"
+#| fig-height: 5
+#| fig-width: 3
+#| warning: false
+#| animation-hook: "gifski"
+#| echo: false
+
+# subset original data so its easier to deal with
+inst_data <- data[elapsed_time < 500]
+
+# add difference column
+# inst_data <- inst_data[sort(elapsed_time)]
+# inst_data <- inst_data[, difference := append(apply(inst_data[,11], 2, diff)^3, 0)]
+# re-sort
+# inst_data[sort]
+
+# get every 10th time
+un <- unique(inst_data$elapsed_time)
+time <- un[seq(1, length(un), 5)]
+
+inst_data1 <- inst_data[elapsed_time %in% time]
+
+time_interval <- ggplot(inst_data1, aes(distance, thermal_conductivity, color=material)) +
+    geom_line(aes(group=1)) +
+    # geom_line(aes(group=interval), size=0.2) +
+    scale_x_reverse() +
+    coord_flip(ylim=c(0,10)) +
+    theme(axis.title.x = element_text("Thermal Conductivity"),
+          axis.title.y = element_text("Depth btoc")) +
+    ggtitle("Instantaneous Thermal Conductivity from 0-400 seconds") +
+    transition_states(elapsed_time)
+
+difference <- ggplot(inst_data1, aes(distance, difference, color=material)) +
+    geom_line(aes(group=1)) +
+    scale_x_reverse() +
+    coord_flip(ylim=c(-0.5,0.5)) +
+    # theme(axis.title.x = element_text("Thermal Conductivity"),
+    #       axis.title.y = element_text("Depth btoc")) +
+    ggtitle("Cubed Differnces Between adjacent Points") +
+    transition_states(elapsed_time)
+
+time_interval
+
+
+
+
+
+
+
+
+```
+
+# Automattically Locate Monitoring Interval Boundries Using Data Signatures
+
+The main indicators of port boundaries are the large increases/decreases at the beginning and end of each monitoring interval and the obvious contrast in thermal conductivity between the sand and bentonite layers. 
+
+For example, we will use the instantaneous slope data at 150 seconds
+
+```{r}
+#| echo: false
+#| warning: false
+#| include: true
+#| label: fig-port-boundaries
+#| fig-cap: ""
+#| fig-height: 10
+
+# isolate 150 seconds
+df <- data %>% mutate_at(vars(elapsed_time), funs(round(.,2)))
+single <- df[elapsed_time == 149.44]
+
+# add column for difference
+single[, difference := append(apply(single[,11], 2, diff)^3, 0)]
+
+# add a column for threshold
+single[, thresh := threshold(single$thermal_conductivity, method="kmeans")]
+
+# plot for threshold
+thresh <- ggplot(single, aes(distance, thermal_conductivity, colour=thresh)) +
+  geom_line()
+
+# plot for difference
+difference <- ggplot(single, aes(distance, difference, color=material)) +
+  geom_line(aes(group=1)) +
+  scale_x_reverse() +
+  coord_flip(ylim=c(-0.25,0.25)) +
+  theme(axis.title.x = element_text("Thermal Conductivity"),
+        axis.title.y = element_text("Depth btoc")) +
+  ggtitle("Cubed Differnces Between adjacent Points")
+
+difference
+
+# kmeans cluster on multiple time intervals/tests?
+# plot(single$distance, single$difference, ylim=c(0,1), type='l')
+```
+
+# Evolution of profile across multiple snapshots
+
+Test have different temporal resolutions; xt: 10-15s, ultima: 3-5s
+
+```{r}
+#| echo: false
+#| fig-height: 10
+# use instantnaeous at 150
+df <- inst_all %>% mutate_at(vars(elapsed_time), funs(round(.,2)))
+single <- df[elapsed_time > 135 & elapsed_time < 150]
+
+xt <- inst_all[machine == "xt"]
+ult <- inst_all[machine=="ultima"]
+ult1 <- ult[seq(1, nrow(ult), 5)]
+
+df <- rbind(xt,ult1)
+
+
+cc <- scales::seq_gradient_pal("yellow", "red")(seq(0,1,length.out=5))
+
+c <- ggplot(single, aes(distance, thermal_conductivity, group = type)) +
+  geom_line(aes(color = type)) +
+  scale_x_reverse() +
+  coord_flip() +
+  ylim(c(0, 1.5)) +
+  # geom_vline(xintercept=intercepts) +
+  ggtitle("Thermal Conductivity of all tests at ~150 seconds") +
+  ylab("Thermal Conductivity (W/mK)") +
+  xlab("Depth Below Ground Surface (m)") +
+  scale_colour_manual(values=cc) +
+  theme_dark()
+c
+```
+
+
+```{r}
+# use instantnaeous at 150
+# df <- inst_all %>% mutate_at(vars(elapsed_time), funs(round(.,2)))
+# single <- df[elapsed_time > 0 & elapsed_time < 10]
+# 
+# 
+# 
+# cc <- scales::seq_gradient_pal("yellow", "red")(seq(0,1,length.out=5))
+# 
+# c <- ggplot(single, aes(distance, thermal_conductivity, group = type)) +
+#   geom_line(aes(color = type), size=1.2) +
+#   scale_x_reverse() + 
+#   coord_flip() +
+#   ylim(c(0, 1.5)) + 
+#   # geom_vline(xintercept=intercepts) +
+#   ggtitle("a) Thermal Conductivity of all tests at 180, 540") + 
+#   ylab("Thermal Conductivity (W/mK)") +
+#   xlab("Depth Below Ground Surface (m)") +
+#   scale_colour_manual(values=cc) +
+#   theme_dark()
+# c
+```
+<!-- Commented Code -->
+```{r}
+#| echo: false
+#| warning: false
+#| include: false
+# # subset data for different time intervals
+# start <- 90
+# end <- 400
+# power <- 10
+# 
+# # create new data.table of slopes for each distance
+# thermal <- data[elapsed_time >= start & elapsed_time <= end
+#           ,list(slope=coef(lm(cumulative_delta_temperature~elapsed_time_log))[2], 
+#           rsquared=summary(lm(cumulative_delta_temperature~elapsed_time_log))$r.squared), by=distance]
+# 
+# # add thermal conductivity
+# thermal[,thermal_conductivity := ((1.0/slope) * power / (4.0*pi))]
+# # add material
+# thermal[,material:= ifelse(
+#   distance %inrange% list(ports$TopDepth, ports$BottomDepth)==TRUE,
+#   "Sand", "Bentonite")]
+# 
+# # plot
+# ggplot(thermal, aes(distance, thermal_conductivity, colour=material)) +
+#   geom_line(aes(group=1), size=1.1) +
+#   ylim(c(0,2.5))
+```
+
+```{r}
+#| include: false
+# #| label: fig-time-intervals
+# #| fig-cap: "Increasing duration used to calculate slope"
+# #| fig-height: 10
+# multiple_intervals <- ggplot(alldata, aes(distance, thermal_conductivity, group=interval)) +
+#   geom_point(aes(color=material)) +
+#   geom_line(aes(group=interval), size=0.2) +
+#   ylim(c(0,2.5)) +
+#   scale_x_reverse() +
+#   coord_flip() 
+# 
+# ggplotly(multiple_intervals)
+
+
+# for (i in time) {
+#   
+#   subset <- inst_data[elapsed_time==i]
+#   
+#   # Thermal conductivity plot
+#   time_interval <- ggplot(subset, aes(distance, thermal_conductivity, color=material)) +
+#     geom_line(aes(group=1)) +
+#     # geom_line(aes(group=interval), size=0.2) +
+#     ylim(c(0,10)) +
+#     scale_x_reverse() +
+#     coord_flip() +
+#     theme(legend.position = "none") +
+#     ggtitle(paste("Instantaneous Thermal Conductivity at:", subset$elapsed_time[1])) 
+#   
+#   print(time_interval)
+# 
+# }
+
+```

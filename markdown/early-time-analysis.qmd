@@ -1,0 +1,138 @@
+---
+title: "Early Data Analysis"
+author: "Mitchell Brown, Jonathan Kennel, Jonathan Munn, Beth Parker"
+format: html
+editor: visual
+---
+
+```{r}
+knitr::opts_chunk$set(echo = TRUE)
+library(dts)
+library(gridExtra)
+library(arrow)
+library(dplyr)
+library(tibble)
+library(duckdb)
+library(data.table)
+library(plotly)
+library(viridis)
+library(gam)
+library(mgcv)
+library(tidyverse)
+library(plotly)
+library(ggplot2)
+library(grid)
+library(mmand)
+library(earthtide)
+library(waterlevel)
+library(hydrorecipes)
+library(splines)
+source("functions/process_heating.R")
+source("functions/process_and_bind.R")
+source("functions/read_snapshots.R")
+source("functions/get_instantaneous_v2.R")
+```
+
+You can add options to executable code like this
+
+```{r}
+
+# Reading Data
+
+# Example: Use 2018_08 test
+input <- "C:/Users/Mitchell/Desktop/Thesis Data/rawSenData/SEN6/2018_08_MLS/channel_1/out/dts_data/dts.rds"
+x <- readRDS(input)
+TOC <- 29.5782 + 0.47
+
+# Backfill Data
+ports <- data.table(read.csv("data/port_data.csv"))[,X := NULL]
+
+# Process data and output dts object
+dts <- read_snapshots(x, TOC=TOC, end=1800, out='dtsobject')
+
+# Get instantaneous smooth data
+# data <- get_instantaneous_2(dts, n_knots=12)
+# saveRDS(data, "data/2018_08_inst")
+data <- readRDS("data/2018_08_inst")
+
+# add column of material
+data[,material:= ifelse(
+  distance %inrange% list(ports$TopDepth, ports$BottomDepth)==TRUE,
+  "Sand", "Bentonite")]
+
+# Plot temperature Traces
+plot(temperature~elapsed_time_log, data, pch=20, cex=0.5)
+points(cumulative_delta_temperature~elapsed_time_log, data, type='l', col='red', lwd=1)
+```
+
+```{r}
+# now plot multiple times
+
+# define time intervals in list
+intervals <- list(c(30, 60),c(60, 120),
+                   c(60, 200), 
+                   c(60, 300), 
+                   c(60, 400), 
+                   c(60, 500))
+
+# create data.table to store all data from each time
+alldata <- data.table()
+
+# loop to generate data for each time interval and bind
+for (times in intervals) {
+  start <- times[1]
+  end <- times[2]
+  
+  thermal <- data[elapsed_time >= start & elapsed_time <= end
+          ,list(slope=coef(lm(cumulative_delta_temperature~elapsed_time_log))[2], 
+          rsquared=summary(lm(cumulative_delta_temperature~elapsed_time_log))$r.squared), by=distance]
+  
+  
+  thermal[,thermal_conductivity := ((1.0/slope) * power / (4.0*pi))]
+  thermal[,material:= ifelse(
+          distance %inrange% list(ports$TopDepth, ports$BottomDepth)==TRUE,
+          "Sand", "Bentonite")]
+  
+  thermal[,interval := toString(times)]
+  
+  alldata <- rbind(alldata, thermal)
+  
+}
+```
+
+@time-intervals shows the evolution of thermal conductivity as the time interval to calculate slope on log-time temperature plots increase
+```{r}
+#| label: time-intervals
+#| fig-cop: "Increasing duration used to calculate slope"
+a <- ggplot(alldata, aes(distance, thermal_conductivity, group=interval)) +
+  geom_point(aes(color=material)) +
+  geom_line(aes(group=interval), size=0.2) +
+  ylim(c(0,2.5))
+
+
+ggplotly(a)
+```
+
+```{r}
+# # subset data for different time intervals
+# start <- 90
+# end <- 400
+# power <- 10
+# 
+# # create new data.table of slopes for each distance
+# thermal <- data[elapsed_time >= start & elapsed_time <= end
+#           ,list(slope=coef(lm(cumulative_delta_temperature~elapsed_time_log))[2], 
+#           rsquared=summary(lm(cumulative_delta_temperature~elapsed_time_log))$r.squared), by=distance]
+# 
+# # add thermal conductivity
+# thermal[,thermal_conductivity := ((1.0/slope) * power / (4.0*pi))]
+# # add material
+# thermal[,material:= ifelse(
+#   distance %inrange% list(ports$TopDepth, ports$BottomDepth)==TRUE,
+#   "Sand", "Bentonite")]
+# 
+# # plot
+# ggplot(thermal, aes(distance, thermal_conductivity, colour=material)) +
+#   geom_line(aes(group=1), size=1.1) +
+#   ylim(c(0,2.5))
+```

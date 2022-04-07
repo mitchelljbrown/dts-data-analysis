@@ -9,6 +9,14 @@ inputs <- c("2018_08_MLS/channel_1/out/dts_data/dts.rds",
 
 dts <- readRDS(inputs[1])
 
+
+n <- read_snapshots(dts, TOC=29, 0, 3600, 10)
+
+
+
+
+
+
 # output data.table of thermal conductivity
 read_snapshots <- function(dts, TOC, 
                            strt, end, power, 
@@ -91,10 +99,6 @@ process_heating <- function(x, TOC,
     x$trace_distance <- get_distance_table(x)[with(x$trace_distance, distance > 0),]
     x$trace_data <- get_data_table(x)[with(x$trace_data, distance > 0),]
   }
-  
-  
-  
-  
   
   # time_resolution <- as.numeric(x$trace_time$start[2]) - as.numeric(x$trace_time$start[1])
   

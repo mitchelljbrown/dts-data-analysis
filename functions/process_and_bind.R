@@ -42,7 +42,8 @@ process_and_bind <- function(inputs, TOC,
 process_and_bind.multiple_times <- function(inputs, time_intervals, 
                                             TOC, 
                                             resample=FALSE, ultima=NULL,
-                                            input_name_location = 1) {
+                                            input_name_location = 1,
+                                            smooth=FALSE) {
   # get folder names
   name_list <- c()
   for (input in inputs) {
@@ -70,7 +71,8 @@ process_and_bind.multiple_times <- function(inputs, time_intervals,
       df[[j]] <- read_snapshots(dts, 
                                 TOC=29.5782, 
                                 strt = time[1], end = time[2], 
-                                power = power)
+                                power = power,
+                                smooth=smooth)
       df[[j]]$test <- name_list[[j]]
       df[[j]]$time <- toString(time)
       j <- j + 1

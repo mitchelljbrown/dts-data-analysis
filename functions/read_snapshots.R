@@ -1,8 +1,15 @@
+
+# heat <- process_heating(x, 20)
+# l <- get_data_table(heat)[elapsed_time >= start & elapsed_time <= end]
+# k <- read_snapshots(x, TOC=20, out="dtsobject")
+
 # output data.table of thermal conductivity
-read_snapshots <- function(dts, TOC, 
-                           strt, end, power, 
-                           resample=FALSE, ultima=NULL, temps=FALSE,
-                           set_back=0) {
+read_snapshots <- function(dts, TOC,
+                           power=15,
+                           start=0.0, end=36000.0,
+                           resample=FALSE, ultima=NULL,
+                           set_back=0, smooth=FALSE,
+                           out="TC") {
   
   if (resample==TRUE) {
     # interpolate to specified test
@@ -12,8 +19,15 @@ read_snapshots <- function(dts, TOC,
     dts$trace_distance <- na.omit(get_distance_table(dts))
   } 
   
-  heat <- process_heating(dts, TOC, 
-                          set_back=set_back)
+  heat <- process_heating(dts, TOC, set_back=set_back)
+  
+  heat$trace_data <- get_data_table(heat)[elapsed_time >= 0 & elapsed_time <= 1800]
+  heat$trace_time <- get_time_table(heat)[elapsed_time >= 0 & elapsed_time <= 1800]
+  
+  # return the dts object
+  if (out=='dtsobject'){
+    return(heat)
+  }
   
   # create a data.table with distance as columns, temperature as rows
   heat_matrix <- data.table(t(to_matrix(heat)))
@@ -25,17 +39,22 @@ read_snapshots <- function(dts, TOC,
   # remove first row
   data <- data[-1]
   
-  if (temps==TRUE) {
-    return(data)
-  }
-  
   # find duration for slope loop input
   heating_duration <- max(heat$trace_time[type=='heating']$elapsed_time)
   
   # isolating time
-  x1 <- data[elapsed_time >= strt & elapsed_time <= end,]
-  input <- log(x1$elapsed_time)  
-  output <- x1[,elapsed_time:=NULL]   
+  input <- log(data$elapsed_time)  
+  output <- data[,elapsed_time:=NULL]   
+  
+  # smooth all columns in output 
+  if (smooth==TRUE) {
+    output <- data.table(apply(output, 2, function(col) smooth.spline(input, col)$y))
+  }
+  
+  # return matrix of temperatures with elapsed time, else generate thermal conductivities
+  if (out=='temp') {
+    return(cbind(input, output))
+  }
   
   # making my own function
   depth <- heat$trace_distance$distance
@@ -64,3 +83,22 @@ read_snapshots <- function(dts, TOC,
   
   return(therm)
 }
+
+
+# copy <- output
+# 
+# c <- data.table(apply(output, 2, function(col) smooth.spline(input, col)$y))
+# 
+# r <- data.table(c)
+# 
+# plot(input, r$`63.4467`)
+# lines(input, copy$`63.4467`)
+
+
+
+
+
+
+
+
+
